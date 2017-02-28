@@ -14,7 +14,7 @@ type
 
   TaskBody* = (iterator(tl: TaskList, t: ptr Task, arg:pointer): BreakState{.closure.})
   Task* = object
-    isRunable: bool # if the task is runnable
+    isRunnable: bool # if the task is runnable
     task: TaskBody
     arg: pointer
     watcher: TaskWatcher
@@ -59,7 +59,7 @@ proc runTask(tasks: TaskList, tracker: var DoublyLinkedNode[Task]): bool {.gcsaf
   let start = tracker
 
   while not tasks.isEmpty:
-    if tracker.value.isRunable:
+    if tracker.value.isRunnable:
       tasks.lock.release()
       let ret = tracker.run(tasks, tracker.value.addr)
       tasks.lock.acquire()
@@ -80,7 +80,7 @@ proc runTask(tasks: TaskList, tracker: var DoublyLinkedNode[Task]): bool {.gcsaf
         else:
           tracker = temp
       return true
-    else: # tracker.value.isRunable
+    else: # tracker.value.isRunnable
       tracker = tracker.next
       if tracker == start:
         return false
@@ -92,16 +92,16 @@ proc wakeUp(tasks: TaskList) =
   if tasks.sendCandidate.len > 0:
     for scMsg in tasks.sendCandidate:
       if tasks.sendWaiter.hasKey(scMsg):
-        for t in tasks.sendWaiter.mget(scMsg):
-          t.isRunable = true
+        for t in tasks.sendWaiter[scMsg]:
+          t.isRunnable = true
         tasks.sendWaiter[scMsg] = newSeq[ptr Task]()
     tasks.sendCandidate = newSeq[pointer]()
 
   if tasks.recvCandidate.len > 0:
     for rcMsg in tasks.recvCandidate:
       if tasks.recvWaiter.hasKey(rcMsg):
-        for t in tasks.recvWaiter.mget(rcMsg):
-          t.isRunable = true
+        for t in tasks.recvWaiter[rcMsg]:
+          t.isRunnable = true
         tasks.recvWaiter[rcMsg] = newSeq[ptr Task]()
     tasks.recvCandidate = newSeq[pointer]()
   tasks.candiLock.release()
@@ -136,7 +136,7 @@ proc pRun* (iter: TaskBody): TaskWatcher {.discardable.} =
   let index = chooseTaskList()
 
   taskListPool[index].lock.acquire()
-  taskListPool[index].list.append(Task(isRunable:true, task:iter, arg: nil, watcher: result, hasArg: false))
+  taskListPool[index].list.append(Task(isRunnable:true, task:iter, arg: nil, watcher: result, hasArg: false))
   taskListPool[index].size += 1
   taskListPool[index].lock.release()
 
@@ -150,7 +150,7 @@ proc pRun* [T](iter: TaskBody, arg: T): TaskWatcher {.discardable.} =
   p[] = arg 
 
   taskListPool[index].lock.acquire()
-  taskListPool[index].list.append(Task(isRunable:true, task:iter, arg: cast[pointer](p), watcher: result, hasArg: true))
+  taskListPool[index].list.append(Task(isRunnable:true, task:iter, arg: cast[pointer](p), watcher: result, hasArg: true))
   taskListPool[index].size += 1
   taskListPool[index].lock.release()
 
@@ -209,14 +209,14 @@ proc registerSend[T](tl: TaskList, msgBox: MsgBox[T], t: ptr Task) =
   let msgBoxPtr = cast[pointer](msgBox)
   if not tl.sendWaiter.hasKey(msgBoxPtr):
     tl.sendWaiter[msgBoxPtr] = newSeq[ptr Task]()
-  tl.sendWaiter.mget(msgBoxPtr).add(t)
+  tl.sendWaiter[msgBoxPtr].add(t)
 
 proc registerRecv[T](tl: TaskList, msgBox: MsgBox[T], t: ptr Task) =   
   msgBox.recvWaiter.add(tl)
   let msgBoxPtr = cast[pointer](msgBox)
   if not tl.recvWaiter.hasKey(msgBoxPtr):
     tl.recvWaiter[msgBoxPtr] = newSeq[ptr Task]()
-  tl.recvWaiter.mget(msgBoxPtr).add(t)
+  tl.recvWaiter[msgBoxPtr].add(t)
 
 proc notifySend[T](msgBox: MsgBox[T]) =
   for tl in msgBox.sendWaiter:
@@ -232,14 +232,14 @@ proc notifyRecv[T](msgBox: MsgBox[T]) =
     tl.candiLock.release()
   msgBox.recvWaiter = newSeq[TaskList]()
 
-template sendWaitForMsgBox(tl, msgBox, t: expr):stmt {.immediate.} =
+template sendWaitForMsgBox(tl, msgBox, t: typed): untyped =
   registerSend(tl, msgBox, t)
-  t.isRunable = false
+  t.isRunnable = false
   msgBox.lock.release()
   yield BreakState(isContinue: true, isSend: true, msgBoxPtr: cast[pointer](msgBox))
   msgBox.lock.acquire()
 
-template send*(msgBox, msg: expr):stmt {.immediate.}=
+template send*(msgBox, msg: typed): untyped=
   print("template send acquire")
   msgBox.lock.acquire()
   print("template send after acquire")
@@ -256,7 +256,7 @@ template send*(msgBox, msg: expr):stmt {.immediate.}=
       sendWaitForMsgBox(tl, msgBox, t)
   msgBox.lock.release()
 
-template recv*(msgBox, msg: expr): stmt {.immediate.} =
+template recv*(msgBox, msg: typed): untyped =
   print("template recv acquire")
   msgBox.lock.acquire()
   print("template recv after acquire")
@@ -271,7 +271,7 @@ template recv*(msgBox, msg: expr): stmt {.immediate.} =
     else:  
       #print("recv wait")
       registerRecv(tl, msgBox, t)
-      t.isRunable = false
+      t.isRunnable = false
       msgBox.lock.release()
       yield BreakState(isContinue: true, isSend: false, msgBoxPtr: cast[pointer](msgBox))
       msgBox.lock.acquire()
@@ -359,7 +359,7 @@ proc routineSingleProc(prc: NimNode): NimNode {.compileTime.} =
   closureIterator[2] = prc[2]
   result.add(closureIterator)
 
-macro routine*(prc: stmt): stmt {.immediate.} =
+macro routine*(prc: untyped): untyped =
   ## Macro which processes async procedures into the appropriate
   ## iterators and yield statements.
   if prc.kind == nnkStmtList:
